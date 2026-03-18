@@ -1,0 +1,66 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Barlow:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-mono:    'Space Mono', monospace;
+  --font-display: 'Barlow', sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  background: #080b12;
+  color: #e5e7eb;
+  font-family: var(--font-display);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* scrollbar */
+::-webkit-scrollbar       { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 4px; }
+
+/* glass card */
+.glass {
+  background: rgba(13, 17, 23, 0.8);
+  backdrop-filter: blur(12px);
+  border: 1px solid #1f2937;
+}
+
+/* dot blink */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+.dot-blink { animation: blink 1.4s ease-in-out infinite; }
+
+/* scan line effect */
+@keyframes scanline {
+  0%   { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+.scanline {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(34,211,238,0.15), transparent);
+  pointer-events: none;
+  z-index: 9999;
+  animation: scanline 6s linear infinite;
+}
+
+/* glow */
+.glow-cyan  { box-shadow: 0 0 20px rgba(34,211,238,0.25); }
+.glow-green { box-shadow: 0 0 20px rgba(74,222,128,0.25); }
+.glow-red   { box-shadow: 0 0 20px rgba(248,113,113,0.25); }
+
+/* number ticker */
+@keyframes countUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.count-anim { animation: countUp 0.3s ease forwards; }
