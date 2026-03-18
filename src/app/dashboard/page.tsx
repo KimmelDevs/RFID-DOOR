@@ -74,9 +74,9 @@ export default function DashboardPage() {
     const unsub = onMQTTMessage(async (topic, payload) => {
       const t = payload.trim()
 
-      // Only handle card_uid topic with 8-char hex UID
+      // Only handle card_uid topic with 8 or 10-char hex UID
       if (!topic.includes('card_uid') && topic !== 'esp32/card_uid') return
-      if (!/^[0-9A-Fa-f]{8}$/.test(t)) return
+      if (!/^[0-9A-Fa-f]{8,10}$/.test(t)) return
 
       const uid = t.toUpperCase()
       if (processing) return

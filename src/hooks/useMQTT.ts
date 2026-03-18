@@ -21,7 +21,7 @@ export function useMQTT() {
       if (topic.includes('led')) {
         if (t === 'ON' || t === 'OFF') setDoorState(t)
       }
-      if (topic.includes('card_uid') && /^[0-9A-Fa-f]{8}$/.test(t)) {
+      if (topic.includes('card_uid') && /^[0-9A-Fa-f]{8,10}$/.test(t)) {
         setLastUID(t.toUpperCase())
       }
     })
