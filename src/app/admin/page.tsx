@@ -102,15 +102,21 @@ export default function AdminPage() {
 
     const unsub = onMQTTMessage(async (topic, payload) => {
       const t = payload.trim()
+
+      // Debug: log every MQTT message
+      console.log('[MQTT]', topic, '->', t.slice(0, 80))
+
       if (!topic.includes('card_uid')) return
+      console.log('[RFID] card_uid received, processing locked:', processingRef.current)
       if (processingRef.current) return
 
       processingRef.current = true
 
       // Verify HMAC signature
       const parsed = await verifyAndParseUID(t)
+      console.log('[RFID] HMAC verify result:', parsed)
       if (!parsed.valid) {
-        console.warn('[RFID] Rejected message:', parsed.reason, '| payload:', t)
+        console.warn('[RFID] Rejected:', parsed.reason, '| payload:', t)
         processingRef.current = false
         return
       }

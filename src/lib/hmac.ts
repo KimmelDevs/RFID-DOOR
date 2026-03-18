@@ -68,10 +68,15 @@ export async function verifyAndParseUID(payload: string): Promise<ParsedUID> {
     return { uid, timestamp: 0, valid: false, reason: 'Invalid timestamp' }
   }
 
-  // Check message age — prevents replay attacks
-  const ageSeconds = Math.floor(Date.now() / 1000) - timestamp
-  if (ageSeconds > MAX_AGE_SECONDS || ageSeconds < -5) {
-    return { uid, timestamp, valid: false, reason: `Message expired (${ageSeconds}s old)` }
+  // Check message age — skip if ESP32 clock is not NTP-synced (timestamp < year 2020)
+  const NTP_SYNCED = timestamp > 1577836800 // Jan 1 2020 unix
+  if (NTP_SYNCED) {
+    const ageSeconds = Math.floor(Date.now() / 1000) - timestamp
+    if (ageSeconds > MAX_AGE_SECONDS || ageSeconds < -5) {
+      return { uid, timestamp, valid: false, reason: `Message expired (${ageSeconds}s old)` }
+    }
+  } else {
+    console.warn('[HMAC] ESP32 clock not NTP synced (ts=' + timestamp + ') — skipping age check')
   }
 
   // Verify HMAC
