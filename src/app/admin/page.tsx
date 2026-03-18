@@ -11,6 +11,7 @@ import {
 } from '@/lib/firestore'
 import { useMQTT } from '@/hooks/useMQTT'
 import { onMQTTMessage, publishMQTT, connectMQTT } from '@/lib/mqtt'
+import { verifyAndParseUID } from '@/lib/hmac'
 import Navbar from '@/components/Navbar'
 import DoorControl from '@/components/DoorControl'
 import TransactionList from '@/components/TransactionList'
@@ -102,11 +103,19 @@ export default function AdminPage() {
     const unsub = onMQTTMessage(async (topic, payload) => {
       const t = payload.trim()
       if (!topic.includes('card_uid')) return
-      if (!/^[0-9A-Fa-f]{8,10}$/.test(t)) return
       if (processingRef.current) return
 
       processingRef.current = true
-      const uid = t.toUpperCase()
+
+      // Verify HMAC signature
+      const parsed = await verifyAndParseUID(t)
+      if (!parsed.valid) {
+        console.warn('[RFID] Rejected message:', parsed.reason, '| payload:', t)
+        processingRef.current = false
+        return
+      }
+
+      const uid = parsed.uid.toUpperCase()
       const now = new Date().toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
       setScanEvent({ type: 'scanning', uid })
