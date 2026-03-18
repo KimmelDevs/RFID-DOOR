@@ -106,3 +106,9 @@ export const listenUserTransactions = (userId: string, cb: (txs: Transaction[]) 
     cb(txs)
   })
 }
+
+export const findUserByCardUid = async (cardUid: string): Promise<UserProfile | null> => {
+  const snap = await getDocs(collection(db, 'users'))
+  const match = snap.docs.find(d => d.data().cardUid === cardUid.toUpperCase())
+  return match ? (match.data() as UserProfile) : null
+}
