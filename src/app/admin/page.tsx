@@ -123,6 +123,25 @@ export default function AdminPage() {
           return
         }
 
+        // ✅ Registered card — toggle door
+        const isCurrentlyOpen = countdownRef.current !== null
+
+        if (isCurrentlyOpen) {
+          // Door is open — close it (no points deducted for closing)
+          if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null }
+          setCountdown(null)
+          publishMQTT(DOOR_TOPIC, 'OFF')
+
+          const ev: ScanEvent = { type: 'granted', uid, name: cardOwner.name, points: cardOwner.points ?? 0 }
+          setScanEvent({ ...ev, name: `${cardOwner.name} (closed door)` } as ScanEvent)
+          setScanLog(l => [{ ...ev, time: now, name: `${cardOwner.name} — closed door` } as ScanLogEntry, ...l.slice(0, 49)])
+          showToast(`Door closed by ${cardOwner.name}`)
+          setTimeout(() => setScanEvent({ type: 'idle' }), 4000)
+          processingRef.current = false
+          return
+        }
+
+        // Door is closed — check points before opening
         if ((cardOwner.points ?? 0) < COST_PER_OPEN) {
           const ev: ScanEvent = { type: 'denied', uid, reason: `Insufficient points (${cardOwner.points ?? 0} pts)` }
           setScanEvent(ev)
@@ -132,7 +151,7 @@ export default function AdminPage() {
           return
         }
 
-        // ✅ Grant access
+        // Open it and deduct points
         const sent = publishMQTT(DOOR_TOPIC, 'ON')
         startCountdown(60)
         if (!sent) {
