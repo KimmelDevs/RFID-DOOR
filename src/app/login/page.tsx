@@ -167,7 +167,7 @@ export default function LoginPage() {
                 <input
                   id="name"
                   value={name} onChange={e => setName(e.target.value)} required
-                  placeholder="John Doe"
+                  placeholder="Prince"
                   className="w-full bg-bg border border-border rounded-xl px-4 py-3 text-white text-sm font-mono placeholder-muted focus:outline-none focus:border-accent transition-colors"
                 />
               </div>
