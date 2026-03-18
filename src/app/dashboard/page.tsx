@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/hooks/useAuth'
 import {
@@ -9,7 +9,7 @@ import {
   adjustPoints, updateUserProfile,
   findUserByCardUid,
 } from '@/lib/firestore'
-import { onMQTTMessage, openDoor, connectMQTT } from '@/lib/mqtt'
+import { onMQTTMessage, publishMQTT, getMQTTConnected, connectMQTT } from '@/lib/mqtt'
 import { useMQTT } from '@/hooks/useMQTT'
 import Navbar from '@/components/Navbar'
 import DoorControl from '@/components/DoorControl'
@@ -17,7 +17,8 @@ import TransactionList from '@/components/TransactionList'
 import StatCard from '@/components/StatCard'
 import clsx from 'clsx'
 
-const COST_PER_OPEN = 1
+const COST_PER_OPEN  = 1
+const DOOR_TOPIC     = 'esp32/led'
 
 type ScanStatus =
   | { type: 'idle' }
@@ -31,20 +32,19 @@ type ScanStatus =
 export default function DashboardPage() {
   const { user, profile: authProfile, loading } = useAuth()
   const router = useRouter()
-  const { connected, doorState, lastUID } = useMQTT()
+  const { connected, doorState } = useMQTT()
 
   const [profile,      setProfile]      = useState<UserProfile | null>(null)
   const [txs,          setTxs]          = useState<Transaction[]>([])
   const [scanStatus,   setScanStatus]   = useState<ScanStatus>({ type: 'idle' })
   const [registerMode, setRegisterMode] = useState(false)
-  const [processing,   setProcessing]   = useState(false)
 
-  // keep a ref to the latest profile so MQTT callback always sees fresh data
-  const profileRef = useRef<UserProfile | null>(null)
-  useEffect(() => { profileRef.current = profile }, [profile])
-
-  // keep a ref to registerMode for the same reason
+  // Refs so the MQTT callback always reads latest values without re-subscribing
+  const profileRef      = useRef<UserProfile | null>(null)
   const registerModeRef = useRef(false)
+  const processingRef   = useRef(false)
+
+  useEffect(() => { profileRef.current      = profile      }, [profile])
   useEffect(() => { registerModeRef.current = registerMode }, [registerMode])
 
   // redirect guards
@@ -65,7 +65,7 @@ export default function DashboardPage() {
     return listenUserTransactions(user.uid, setTxs)
   }, [user])
 
-  // ── RFID scan handler via MQTT ──────────────────────────────────────────────
+  // ── RFID scan handler — subscribe ONCE, use refs for fresh state ────────────
   useEffect(() => {
     if (!user) return
 
@@ -74,66 +74,64 @@ export default function DashboardPage() {
     const unsub = onMQTTMessage(async (topic, payload) => {
       const t = payload.trim()
 
-      // Only handle card_uid topic with 8 or 10-char hex UID
-      if (!topic.includes('card_uid') && topic !== 'esp32/card_uid') return
+      // Only handle card UID messages (8 or 10 hex chars)
+      if (!topic.includes('card_uid')) return
       if (!/^[0-9A-Fa-f]{8,10}$/.test(t)) return
 
-      const uid = t.toUpperCase()
-      if (processing) return
-      setProcessing(true)
+      // Debounce — ignore if already handling a scan
+      if (processingRef.current) return
+      processingRef.current = true
       setScanStatus({ type: 'scanning' })
 
-      try {
-        const currentProfile = profileRef.current
+      const uid = t.toUpperCase()
 
-        // ── REGISTER MODE: save UID to this user's account ──────────────────
+      try {
+        // ── REGISTER MODE ──────────────────────────────────────────────────
         if (registerModeRef.current) {
           setScanStatus({ type: 'saving', uid })
           await updateUserProfile(user.uid, { cardUid: uid })
           setScanStatus({ type: 'saved', uid })
           setRegisterMode(false)
           setTimeout(() => setScanStatus({ type: 'idle' }), 4000)
-          setProcessing(false)
+          processingRef.current = false
           return
         }
 
-        // ── NORMAL MODE: look up card in Firestore ───────────────────────────
+        // ── NORMAL MODE: look up card ──────────────────────────────────────
         const cardOwner = await findUserByCardUid(uid)
 
         if (!cardOwner) {
-          // Card not registered to anyone
           setScanStatus({ type: 'unknown', uid })
           setTimeout(() => setScanStatus({ type: 'idle' }), 5000)
-          setProcessing(false)
+          processingRef.current = false
           return
         }
 
-        // Card belongs to this user?
         if (cardOwner.uid !== user.uid) {
-          setScanStatus({
-            type: 'denied',
-            uid,
-            message: 'This card is registered to a different account',
-          })
+          setScanStatus({ type: 'denied', uid, message: 'Card belongs to a different account' })
           setTimeout(() => setScanStatus({ type: 'idle' }), 4000)
-          setProcessing(false)
+          processingRef.current = false
           return
         }
 
-        // Check points
         if ((cardOwner.points ?? 0) < COST_PER_OPEN) {
-          setScanStatus({
-            type: 'denied',
-            uid,
-            message: `Insufficient points (need ${COST_PER_OPEN}, have ${cardOwner.points ?? 0})`,
-          })
+          setScanStatus({ type: 'denied', uid, message: `Not enough points (have ${cardOwner.points ?? 0}, need ${COST_PER_OPEN})` })
           setTimeout(() => setScanStatus({ type: 'idle' }), 4000)
-          setProcessing(false)
+          processingRef.current = false
           return
         }
 
-        // ✅ All good — open door + deduct points
-        openDoor()
+        // ✅ Grant access — publish ON directly, then deduct points
+        const sent = publishMQTT(DOOR_TOPIC, 'ON')
+        console.log('[RFID] publishMQTT ON →', sent, '| MQTT connected:', getMQTTConnected())
+
+        if (!sent) {
+          // MQTT not ready yet — retry once after short delay
+          await new Promise(r => setTimeout(r, 600))
+          const retry = publishMQTT(DOOR_TOPIC, 'ON')
+          console.log('[RFID] retry publish →', retry)
+        }
+
         await adjustPoints(
           user.uid,
           -COST_PER_OPEN,
@@ -142,22 +140,21 @@ export default function DashboardPage() {
           'System',
           cardOwner.name,
         )
-        setScanStatus({
-          type: 'success',
-          uid,
-          message: `Welcome, ${cardOwner.name}! −${COST_PER_OPEN} pt`,
-        })
+
+        setScanStatus({ type: 'success', uid, message: `Welcome, ${cardOwner.name}! −${COST_PER_OPEN} pt` })
         setTimeout(() => setScanStatus({ type: 'idle' }), 5000)
+
       } catch (err) {
-        console.error('RFID handler error', err)
+        console.error('[RFID] handler error', err)
         setScanStatus({ type: 'idle' })
       }
 
-      setProcessing(false)
+      processingRef.current = false
     })
 
+    // cleanup only on unmount / user change — NOT on every processing toggle
     return unsub
-  }, [user, processing])
+  }, [user]) // ← no `processing` dep here
 
   if (loading || !profile) {
     return (
@@ -176,7 +173,6 @@ export default function DashboardPage() {
       <Navbar />
 
       <main className="max-w-5xl mx-auto px-4 py-8 animate-slide-up">
-        {/* welcome */}
         <div className="mb-8">
           <h1 className="text-2xl font-bold text-white">
             Hey, <span className="text-accent">{profile.name}</span> 👋
@@ -186,20 +182,16 @@ export default function DashboardPage() {
           </p>
         </div>
 
-        {/* stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          <StatCard label="Points"       value={profile.points}  sub="available" color="cyan"  />
-          <StatCard label="Total Earned" value={totalCredits}    sub="all time"  color="green" />
-          <StatCard label="Total Used"   value={totalDebits}     sub="all time"  color="amber" />
-          <StatCard label="Door Opens"   value={opens}           sub="all time"  color="red"   />
+          <StatCard label="Points"       value={profile.points} sub="available" color="cyan"  />
+          <StatCard label="Total Earned" value={totalCredits}   sub="all time"  color="green" />
+          <StatCard label="Total Used"   value={totalDebits}    sub="all time"  color="amber" />
+          <StatCard label="Door Opens"   value={opens}          sub="all time"  color="red"   />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-          {/* ── LEFT COLUMN ─────────────────────────────────────────────── */}
           <div className="lg:col-span-1 space-y-4">
-
-            {/* Door control (manual button) */}
             <div>
               <h2 className="text-xs font-bold uppercase tracking-widest text-muted mb-3">Manual Control</h2>
               <DoorControl
@@ -212,12 +204,9 @@ export default function DashboardPage() {
               />
             </div>
 
-            {/* ── RFID CARD SECTION ──────────────────────────────────────── */}
             <div>
               <h2 className="text-xs font-bold uppercase tracking-widest text-muted mb-3">RFID Card</h2>
               <div className="bg-surface border border-border rounded-2xl p-5 space-y-4">
-
-                {/* Current linked card */}
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs text-muted font-mono uppercase tracking-widest mb-1">Linked Card</p>
@@ -236,7 +225,6 @@ export default function DashboardPage() {
                   )}
                 </div>
 
-                {/* Register / scan status */}
                 <ScanStatusPanel
                   status={scanStatus}
                   registerMode={registerMode}
@@ -248,10 +236,8 @@ export default function DashboardPage() {
                 />
               </div>
             </div>
-
           </div>
 
-          {/* ── TRANSACTIONS ────────────────────────────────────────────── */}
           <div className="lg:col-span-2">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-xs font-bold uppercase tracking-widest text-muted">Transaction History</h2>
@@ -268,11 +254,8 @@ export default function DashboardPage() {
   )
 }
 
-// ── Scan Status Panel ────────────────────────────────────────────────────────
-
-function ScanStatusPanel({
-  status, registerMode, onToggleRegister, hasCard,
-}: {
+// ── Scan Status Panel ─────────────────────────────────────────────────────────
+function ScanStatusPanel({ status, registerMode, onToggleRegister, hasCard }: {
   status: ScanStatus
   registerMode: boolean
   onToggleRegister: () => void
@@ -281,9 +264,7 @@ function ScanStatusPanel({
   if (registerMode) {
     return (
       <div className="space-y-3">
-        {/* pulsing scan prompt */}
         <div className="relative flex flex-col items-center justify-center gap-3 bg-accent/5 border border-accent/20 rounded-xl py-6 overflow-hidden">
-          {/* animated ring */}
           <div className="relative">
             <div className="w-14 h-14 rounded-full border-2 border-accent flex items-center justify-center">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-7 h-7 text-accent">
@@ -297,8 +278,6 @@ function ScanStatusPanel({
             <p className="text-accent font-semibold text-sm">Scan your RFID card now</p>
             <p className="text-muted text-xs mt-1 font-mono">Hold card near the reader</p>
           </div>
-
-          {/* saving state */}
           {status.type === 'saving' && (
             <div className="absolute inset-0 bg-bg/80 flex items-center justify-center gap-2">
               <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
@@ -306,7 +285,6 @@ function ScanStatusPanel({
             </div>
           )}
         </div>
-
         <button onClick={onToggleRegister}
           className="w-full py-2 rounded-xl border border-border text-muted hover:text-white hover:border-dim text-sm font-semibold transition-all">
           Cancel
@@ -315,77 +293,65 @@ function ScanStatusPanel({
     )
   }
 
-  // Scan result displays
   const resultPanel = () => {
-    if (status.type === 'scanning') {
-      return (
-        <div className="flex items-center gap-3 bg-accent/5 border border-accent/20 rounded-xl px-4 py-3">
-          <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin flex-shrink-0" />
-          <span className="text-accent text-sm font-mono">Reading card…</span>
+    if (status.type === 'scanning') return (
+      <div className="flex items-center gap-3 bg-accent/5 border border-accent/20 rounded-xl px-4 py-3">
+        <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin flex-shrink-0" />
+        <span className="text-accent text-sm font-mono">Reading card…</span>
+      </div>
+    )
+    if (status.type === 'success') return (
+      <div className="flex items-start gap-3 bg-green/5 border border-green/20 rounded-xl px-4 py-3">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5 text-green flex-shrink-0 mt-0.5">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <div>
+          <p className="text-green text-sm font-semibold">{status.message}</p>
+          <p className="text-muted text-xs font-mono mt-0.5">UID: {status.uid}</p>
         </div>
-      )
-    }
-    if (status.type === 'success') {
-      return (
-        <div className="flex items-start gap-3 bg-green/5 border border-green/20 rounded-xl px-4 py-3">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5 text-green flex-shrink-0 mt-0.5">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-          </svg>
-          <div>
-            <p className="text-green text-sm font-semibold">{status.message}</p>
-            <p className="text-muted text-xs font-mono mt-0.5">UID: {status.uid}</p>
-          </div>
+      </div>
+    )
+    if (status.type === 'denied') return (
+      <div className="flex items-start gap-3 bg-red/5 border border-red/20 rounded-xl px-4 py-3">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5 text-red flex-shrink-0 mt-0.5">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <div>
+          <p className="text-red text-sm font-semibold">Access Denied</p>
+          <p className="text-muted text-xs font-mono mt-0.5">{status.message}</p>
         </div>
-      )
-    }
-    if (status.type === 'denied') {
-      return (
-        <div className="flex items-start gap-3 bg-red/5 border border-red/20 rounded-xl px-4 py-3">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5 text-red flex-shrink-0 mt-0.5">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-          </svg>
-          <div>
-            <p className="text-red text-sm font-semibold">Access Denied</p>
-            <p className="text-muted text-xs font-mono mt-0.5">{status.message}</p>
-          </div>
+      </div>
+    )
+    if (status.type === 'unknown') return (
+      <div className="flex items-start gap-3 bg-amber/5 border border-amber/20 rounded-xl px-4 py-3">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5 text-amber flex-shrink-0 mt-0.5">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <div>
+          <p className="text-amber text-sm font-semibold">Card not registered</p>
+          <p className="text-muted text-xs font-mono mt-0.5">UID: {status.uid}</p>
+          <p className="text-muted text-xs mt-1">Use "Register Card" to link it</p>
         </div>
-      )
-    }
-    if (status.type === 'unknown') {
-      return (
-        <div className="flex items-start gap-3 bg-amber/5 border border-amber/20 rounded-xl px-4 py-3">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5 text-amber flex-shrink-0 mt-0.5">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-          </svg>
-          <div>
-            <p className="text-amber text-sm font-semibold">Card not registered</p>
-            <p className="text-muted text-xs font-mono mt-0.5">UID: {status.uid}</p>
-            <p className="text-muted text-xs mt-1">Use "Register Card" to link it to your account</p>
-          </div>
+      </div>
+    )
+    if (status.type === 'saved') return (
+      <div className="flex items-start gap-3 bg-green/5 border border-green/20 rounded-xl px-4 py-3">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5 text-green flex-shrink-0 mt-0.5">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <div>
+          <p className="text-green text-sm font-semibold">Card registered!</p>
+          <p className="text-muted text-xs font-mono mt-0.5">UID: {status.uid}</p>
         </div>
-      )
-    }
-    if (status.type === 'saved') {
-      return (
-        <div className="flex items-start gap-3 bg-green/5 border border-green/20 rounded-xl px-4 py-3">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5 text-green flex-shrink-0 mt-0.5">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-          </svg>
-          <div>
-            <p className="text-green text-sm font-semibold">Card registered!</p>
-            <p className="text-muted text-xs font-mono mt-0.5">UID: {status.uid}</p>
-          </div>
-        </div>
-      )
-    }
+      </div>
+    )
     return null
   }
 
   return (
     <div className="space-y-3">
       {resultPanel()}
-      <button
-        onClick={onToggleRegister}
+      <button onClick={onToggleRegister}
         className={clsx(
           'w-full py-2.5 rounded-xl text-sm font-semibold transition-all border',
           hasCard
