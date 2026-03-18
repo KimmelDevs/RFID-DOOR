@@ -52,11 +52,31 @@ export default function AdminPage() {
   const [search,      setSearch]      = useState('')
   const [scanEvent,   setScanEvent]   = useState<ScanEvent>({ type: 'idle' })
   const [scanLog,     setScanLog]     = useState<ScanLogEntry[]>([])
+  const [countdown,   setCountdown]   = useState<number | null>(null)
 
   // Refs so MQTT callback always sees fresh data without re-subscribing
-  const processingRef = useRef(false)
-  const usersRef      = useRef<UserProfile[]>([])
+  const processingRef  = useRef(false)
+  const usersRef       = useRef<UserProfile[]>([])
+  const countdownRef   = useRef<ReturnType<typeof setInterval> | null>(null)
   useEffect(() => { usersRef.current = users }, [users])
+
+  const startCountdown = (seconds = 60) => {
+    // clear any existing countdown
+    if (countdownRef.current) clearInterval(countdownRef.current)
+    setCountdown(seconds)
+    let remaining = seconds
+    countdownRef.current = setInterval(() => {
+      remaining -= 1
+      setCountdown(remaining)
+      if (remaining <= 0) {
+        clearInterval(countdownRef.current!)
+        countdownRef.current = null
+        setCountdown(null)
+        publishMQTT(DOOR_TOPIC, 'OFF')
+        showToast('Auto-closed after 60s')
+      }
+    }, 1000)
+  }
 
   // guards
   useEffect(() => {
@@ -114,6 +134,7 @@ export default function AdminPage() {
 
         // ✅ Grant access
         const sent = publishMQTT(DOOR_TOPIC, 'ON')
+        startCountdown(60)
         if (!sent) {
           await new Promise(r => setTimeout(r, 600))
           publishMQTT(DOOR_TOPIC, 'ON')
@@ -352,14 +373,36 @@ export default function AdminPage() {
                 )}
               </div>
 
+              {/* countdown bar */}
+              {countdown !== null && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs font-mono">
+                    <span className="text-amber font-semibold">Auto-closing in</span>
+                    <span className={countdown <= 10 ? 'text-red font-bold' : 'text-amber font-bold'}>
+                      {countdown}s
+                    </span>
+                  </div>
+                  <div className="h-2 bg-bg rounded-full overflow-hidden border border-border">
+                    <div
+                      className={`h-full rounded-full transition-all duration-1000 ${countdown <= 10 ? 'bg-red' : 'bg-amber'}`}
+                      style={{ width: `${(countdown / 60) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
               {/* manual door override */}
               <div className="grid grid-cols-2 gap-2 pt-2">
-                <button onClick={() => { publishMQTT(DOOR_TOPIC, 'ON');  showToast('Door opened (admin override)') }}
+                <button onClick={() => { publishMQTT(DOOR_TOPIC, 'ON'); startCountdown(60); showToast('Door opened — auto-closes in 60s') }}
                   disabled={!connected}
                   className="py-2.5 rounded-xl bg-green hover:opacity-90 disabled:opacity-40 text-bg font-bold text-sm transition-all">
                   Force Open
                 </button>
-                <button onClick={() => { publishMQTT(DOOR_TOPIC, 'OFF'); showToast('Door closed') }}
+                <button onClick={() => {
+                    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; setCountdown(null) }
+                    publishMQTT(DOOR_TOPIC, 'OFF')
+                    showToast('Door closed')
+                  }}
                   disabled={!connected}
                   className="py-2.5 rounded-xl border border-border hover:border-accent text-white font-bold text-sm transition-all disabled:opacity-40">
                   Force Close
