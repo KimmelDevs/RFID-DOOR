@@ -20,6 +20,12 @@ import clsx from 'clsx'
 const COST_PER_OPEN = 1
 const DOOR_TOPIC    = 'esp32/led'
 
+type ScanLogEntry = (
+  | { type: 'granted'; uid: string; name: string; points: number }
+  | { type: 'denied';  uid: string; reason: string }
+  | { type: 'unknown'; uid: string }
+) & { time: string }
+
 type ScanEvent =
   | { type: 'idle' }
   | { type: 'scanning'; uid: string }
@@ -45,7 +51,7 @@ export default function AdminPage() {
   const [mqttPayload, setMqttPayload] = useState('')
   const [search,      setSearch]      = useState('')
   const [scanEvent,   setScanEvent]   = useState<ScanEvent>({ type: 'idle' })
-  const [scanLog,     setScanLog]     = useState<Array<ScanEvent & { time: string }>>([])
+  const [scanLog,     setScanLog]     = useState<ScanLogEntry[]>([])
 
   // Refs so MQTT callback always sees fresh data without re-subscribing
   const processingRef = useRef(false)
@@ -91,7 +97,7 @@ export default function AdminPage() {
         if (!cardOwner) {
           const ev: ScanEvent = { type: 'unknown', uid }
           setScanEvent(ev)
-          setScanLog(l => [{ ...ev, time: now }, ...l.slice(0, 49)])
+          setScanLog(l => [{ ...ev, time: now } as ScanLogEntry, ...l.slice(0, 49)])
           setTimeout(() => setScanEvent({ type: 'idle' }), 5000)
           processingRef.current = false
           return
@@ -100,7 +106,7 @@ export default function AdminPage() {
         if ((cardOwner.points ?? 0) < COST_PER_OPEN) {
           const ev: ScanEvent = { type: 'denied', uid, reason: `Insufficient points (${cardOwner.points ?? 0} pts)` }
           setScanEvent(ev)
-          setScanLog(l => [{ ...ev, time: now }, ...l.slice(0, 49)])
+          setScanLog(l => [{ ...ev, time: now } as ScanLogEntry, ...l.slice(0, 49)])
           setTimeout(() => setScanEvent({ type: 'idle' }), 5000)
           processingRef.current = false
           return
@@ -121,7 +127,7 @@ export default function AdminPage() {
 
         const ev: ScanEvent = { type: 'granted', uid, name: cardOwner.name, points: (cardOwner.points ?? 0) - COST_PER_OPEN }
         setScanEvent(ev)
-        setScanLog(l => [{ ...ev, time: now }, ...l.slice(0, 49)])
+        setScanLog(l => [{ ...ev, time: now } as ScanLogEntry, ...l.slice(0, 49)])
         setTimeout(() => setScanEvent({ type: 'idle' }), 5000)
 
       } catch (err) {
