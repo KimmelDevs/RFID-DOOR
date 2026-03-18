@@ -6,15 +6,70 @@ import { useAuth } from '@/hooks/useAuth'
 
 type Mode = 'signin' | 'signup'
 
+function EyeIcon({ open }: { open: boolean }) {
+  return open ? (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+      <circle cx="12" cy="12" r="3"/>
+    </svg>
+  ) : (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/>
+      <line x1="1" y1="1" x2="23" y2="23"/>
+    </svg>
+  )
+}
+
+interface PasswordInputProps {
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  required?: boolean
+  label: string
+  id: string
+}
+
+function PasswordInput({ value, onChange, placeholder, required, label, id }: PasswordInputProps) {
+  const [show, setShow] = useState(false)
+  return (
+    <div>
+      <label htmlFor={id} className="block text-xs font-semibold uppercase tracking-widest text-muted mb-2">
+        {label}
+      </label>
+      <div className="relative">
+        <input
+          id={id}
+          type={show ? 'text' : 'password'}
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          placeholder={placeholder || '••••••••'}
+          required={required}
+          className="w-full bg-bg border border-border rounded-xl px-4 py-3 pr-11 text-white text-sm font-mono placeholder-muted focus:outline-none focus:border-accent transition-colors"
+        />
+        <button
+          type="button"
+          onClick={() => setShow(s => !s)}
+          className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-white transition-colors"
+          tabIndex={-1}
+        >
+          <EyeIcon open={show} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function LoginPage() {
   const { signIn, signUp, user, profile, loading } = useAuth()
   const router = useRouter()
-  const [mode,  setMode]  = useState<Mode>('signin')
-  const [email, setEmail] = useState('')
-  const [pass,  setPass]  = useState('')
-  const [name,  setName]  = useState('')
-  const [err,   setErr]   = useState('')
-  const [busy,  setBusy]  = useState(false)
+
+  const [mode,    setMode]    = useState<Mode>('signin')
+  const [email,   setEmail]   = useState('')
+  const [pass,    setPass]    = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [name,    setName]    = useState('')
+  const [err,     setErr]     = useState('')
+  const [busy,    setBusy]    = useState(false)
 
   useEffect(() => {
     if (!loading && user) {
@@ -22,18 +77,42 @@ export default function LoginPage() {
     }
   }, [user, profile, loading, router])
 
+  const passwordsMatch = mode === 'signin' || pass === confirm
+  const passwordStrong = pass.length >= 6
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setErr('')
+
+    if (mode === 'signup') {
+      if (!passwordStrong) { setErr('Password must be at least 6 characters'); return }
+      if (!passwordsMatch) { setErr('Passwords do not match'); return }
+    }
+
     setBusy(true)
     try {
       if (mode === 'signin') await signIn(email, pass)
       else                   await signUp(email, pass, name)
     } catch (e: any) {
-      setErr(e.message?.replace('Firebase: ', '') || 'Something went wrong')
+      const msg = e.message || ''
+      if (msg.includes('user-not-found') || msg.includes('wrong-password') || msg.includes('invalid-credential'))
+        setErr('Invalid email or password')
+      else if (msg.includes('email-already-in-use'))
+        setErr('Email already registered — try signing in')
+      else if (msg.includes('weak-password'))
+        setErr('Password is too weak')
+      else
+        setErr(msg.replace('Firebase: ', '').split('(')[0].trim())
     } finally {
       setBusy(false)
     }
+  }
+
+  const switchMode = (m: Mode) => {
+    setMode(m)
+    setErr('')
+    setPass('')
+    setConfirm('')
   }
 
   return (
@@ -46,26 +125,29 @@ export default function LoginPage() {
         }}
       />
       {/* glow blobs */}
-      <div className="absolute top-1/4 left-1/4 w-96 h-96 rounded-full bg-accent opacity-[0.04] blur-3xl" />
-      <div className="absolute bottom-1/4 right-1/4 w-80 h-80 rounded-full bg-green opacity-[0.04] blur-3xl" />
+      <div className="absolute top-1/4 left-1/4 w-96 h-96 rounded-full bg-accent opacity-[0.04] blur-3xl pointer-events-none" />
+      <div className="absolute bottom-1/4 right-1/4 w-80 h-80 rounded-full bg-green opacity-[0.04] blur-3xl pointer-events-none" />
 
       <div className="relative z-10 w-full max-w-sm animate-fade-in">
         {/* logo */}
         <div className="text-center mb-10">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-surface border border-border mb-4 glow-cyan">
             <svg viewBox="0 0 24 24" fill="none" className="w-8 h-8 text-accent" stroke="currentColor" strokeWidth="1.5">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M7.864 4.243A7.5 7.5 0 0119.5 10.5c0 2.92-.556 5.709-1.568 8.268M5.742 6.364A7.465 7.465 0 004.5 10.5a7.464 7.464 0 01-1.15 3.993m1.989 3.559A11.209 11.209 0 008.25 10.5a3.75 3.75 0 117.5 0c0 .527-.021 1.049-.064 1.565M12 10.5a14.94 14.94 0 01-3.6 9.75m6.633-4.596a18.666 18.666 0 01-2.485 5.33" />
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M7 11V7a5 5 0 0110 0v4"/>
             </svg>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">RFID<span className="text-accent">/</span>DOOR</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-white">
+            RFID<span className="text-accent">/</span>DOOR
+          </h1>
           <p className="text-muted text-sm mt-1 font-mono">Access Control System</p>
         </div>
 
         <div className="glass rounded-2xl p-8">
-          {/* tabs */}
+          {/* mode tabs */}
           <div className="flex rounded-xl bg-bg border border-border p-1 mb-7">
             {(['signin', 'signup'] as Mode[]).map(m => (
-              <button key={m} onClick={() => { setMode(m); setErr('') }}
+              <button key={m} type="button" onClick={() => switchMode(m)}
                 className={`flex-1 py-2 rounded-lg text-sm font-semibold transition-all ${
                   mode === m
                     ? 'bg-accent text-bg shadow'
@@ -79,37 +161,94 @@ export default function LoginPage() {
           <form onSubmit={submit} className="space-y-4">
             {mode === 'signup' && (
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-widest text-muted mb-2">Full Name</label>
+                <label htmlFor="name" className="block text-xs font-semibold uppercase tracking-widest text-muted mb-2">
+                  Full Name
+                </label>
                 <input
+                  id="name"
                   value={name} onChange={e => setName(e.target.value)} required
                   placeholder="John Doe"
                   className="w-full bg-bg border border-border rounded-xl px-4 py-3 text-white text-sm font-mono placeholder-muted focus:outline-none focus:border-accent transition-colors"
                 />
               </div>
             )}
+
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-widest text-muted mb-2">Email</label>
+              <label htmlFor="email" className="block text-xs font-semibold uppercase tracking-widest text-muted mb-2">
+                Email
+              </label>
               <input
+                id="email"
                 type="email" value={email} onChange={e => setEmail(e.target.value)} required
                 placeholder="you@example.com"
                 className="w-full bg-bg border border-border rounded-xl px-4 py-3 text-white text-sm font-mono placeholder-muted focus:outline-none focus:border-accent transition-colors"
               />
             </div>
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-widest text-muted mb-2">Password</label>
-              <input
-                type="password" value={pass} onChange={e => setPass(e.target.value)} required
-                placeholder="••••••••"
-                className="w-full bg-bg border border-border rounded-xl px-4 py-3 text-white text-sm font-mono placeholder-muted focus:outline-none focus:border-accent transition-colors"
-              />
-            </div>
 
-            {err && (
-              <p className="text-red text-xs font-mono bg-red/10 border border-red/20 rounded-lg px-3 py-2">{err}</p>
+            <PasswordInput
+              id="password"
+              label="Password"
+              value={pass}
+              onChange={setPass}
+              required
+            />
+
+            {mode === 'signup' && (
+              <>
+                <PasswordInput
+                  id="confirm"
+                  label="Confirm Password"
+                  value={confirm}
+                  onChange={setConfirm}
+                  placeholder="Re-enter password"
+                  required
+                />
+
+                {/* password match indicator */}
+                {confirm.length > 0 && (
+                  <div className={`flex items-center gap-2 text-xs font-mono px-1 ${
+                    passwordsMatch ? 'text-green' : 'text-red'
+                  }`}>
+                    <span>{passwordsMatch ? '✓' : '✗'}</span>
+                    <span>{passwordsMatch ? 'Passwords match' : 'Passwords do not match'}</span>
+                  </div>
+                )}
+
+                {/* strength bar */}
+                {pass.length > 0 && (
+                  <div className="space-y-1 px-1">
+                    <div className="h-1 bg-border rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-300 ${
+                          pass.length < 6  ? 'bg-red w-1/4' :
+                          pass.length < 10 ? 'bg-amber w-2/4' :
+                                             'bg-green w-full'
+                        }`}
+                      />
+                    </div>
+                    <p className={`text-xs font-mono ${
+                      pass.length < 6  ? 'text-red' :
+                      pass.length < 10 ? 'text-amber' :
+                                         'text-green'
+                    }`}>
+                      {pass.length < 6 ? 'Too short' : pass.length < 10 ? 'Acceptable' : 'Strong'}
+                    </p>
+                  </div>
+                )}
+              </>
             )}
 
-            <button type="submit" disabled={busy}
-              className="w-full bg-accent hover:opacity-90 disabled:opacity-50 text-bg font-bold py-3 rounded-xl transition-all text-sm tracking-wide mt-2">
+            {err && (
+              <p className="text-red text-xs font-mono bg-red/10 border border-red/20 rounded-lg px-3 py-2">
+                {err}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={busy || (mode === 'signup' && (!passwordsMatch || !passwordStrong))}
+              className="w-full bg-accent hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed text-bg font-bold py-3 rounded-xl transition-all text-sm tracking-wide mt-1"
+            >
               {busy ? (
                 <span className="flex items-center justify-center gap-2">
                   <span className="w-4 h-4 border-2 border-bg border-t-transparent rounded-full animate-spin" />
@@ -121,7 +260,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center text-muted/50 text-xs font-mono mt-6">
-          New accounts default to User role
+          New accounts are User role by default
         </p>
       </div>
     </div>
