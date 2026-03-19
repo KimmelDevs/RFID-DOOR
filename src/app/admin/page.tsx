@@ -130,6 +130,7 @@ export default function AdminPage() {
         const cardOwner = await findUserByCardUid(uid)
 
         if (!cardOwner) {
+          publishMQTT(DOOR_TOPIC, 'DENY')
           const ev: ScanEvent = { type: 'unknown', uid }
           setScanEvent(ev)
           setScanLog(l => [{ ...ev, time: now } as ScanLogEntry, ...l.slice(0, 49)])
@@ -158,6 +159,7 @@ export default function AdminPage() {
 
         // Door is closed — check points before opening
         if ((cardOwner.points ?? 0) < COST_PER_OPEN) {
+          publishMQTT(DOOR_TOPIC, 'DENY')
           const ev: ScanEvent = { type: 'denied', uid, reason: `Insufficient points (${cardOwner.points ?? 0} pts)` }
           setScanEvent(ev)
           setScanLog(l => [{ ...ev, time: now } as ScanLogEntry, ...l.slice(0, 49)])
