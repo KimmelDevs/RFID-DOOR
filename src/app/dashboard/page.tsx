@@ -32,7 +32,7 @@ type ScanStatus =
 export default function DashboardPage() {
   const { user, profile: authProfile, loading } = useAuth()
   const router = useRouter()
-  const { connected, doorState, lastUID } = useMQTT()
+  const { connected, doorState, roofState, lastUID } = useMQTT()
 
   const [profile,      setProfile]      = useState<UserProfile | null>(null)
   const [txs,          setTxs]          = useState<Transaction[]>([])
@@ -40,12 +40,13 @@ export default function DashboardPage() {
   const [registerMode, setRegisterMode] = useState(false)
 
   // keep a ref to the latest profile so MQTT callback always sees fresh data
-  const profileRef = useRef<UserProfile | null>(null)
+  const profileRef           = useRef<UserProfile | null>(null)
   useEffect(() => { profileRef.current = profile }, [profile])
 
   // keep a ref to registerMode for the same reason
-  const registerModeRef = useRef(false)
-  const processingRef   = useRef(false)
+  const registerModeRef      = useRef(false)
+  const processingRef        = useRef(false)
+  const lastProcessedPayload = useRef<string>('')  // dedup
   useEffect(() => { registerModeRef.current = registerMode }, [registerMode])
 
   // redirect guards
@@ -67,8 +68,16 @@ export default function DashboardPage() {
   }, [user])
 
   // ── RFID scan handler via MQTT ──────────────────────────────────────────────
+  const rfidUnsubRef = useRef<(() => void) | null>(null)
+
   useEffect(() => {
     if (!user) return
+
+    // Clean up any stale subscription first (React Strict Mode double-invoke fix)
+    if (rfidUnsubRef.current) {
+      rfidUnsubRef.current()
+      rfidUnsubRef.current = null
+    }
 
     connectMQTT()
 
@@ -79,8 +88,17 @@ export default function DashboardPage() {
       console.log('[MQTT]', topic, '->', t.slice(0, 80))
 
       if (!topic.includes('card_uid')) return
+
+      // Deduplicate: same payload already handled
+      if (t === lastProcessedPayload.current) {
+        console.log('[RFID] duplicate payload ignored')
+        return
+      }
+
       console.log('[RFID] card_uid received, processing locked:', processingRef.current)
       if (processingRef.current) return
+
+      lastProcessedPayload.current = t
 
       // Verify HMAC signature before doing anything
       const parsed = await verifyAndParseUID(t)
@@ -164,10 +182,15 @@ export default function DashboardPage() {
         setScanStatus({ type: 'idle' })
       }
 
+      setTimeout(() => { lastProcessedPayload.current = '' }, 4000)
       processingRef.current = false
     })
 
-    return unsub
+    rfidUnsubRef.current = unsub
+    return () => {
+      unsub()
+      rfidUnsubRef.current = null
+    }
   }, [user]) // subscribe once only
 
   if (loading || !profile) {
@@ -198,11 +221,12 @@ export default function DashboardPage() {
         </div>
 
         {/* stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
           <StatCard label="Points"       value={profile.points}  sub="available" color="cyan"  />
           <StatCard label="Total Earned" value={totalCredits}    sub="all time"  color="green" />
           <StatCard label="Total Used"   value={totalDebits}     sub="all time"  color="amber" />
           <StatCard label="Door Opens"   value={opens}           sub="all time"  color="red"   />
+          <StatCard label="Roof"         value={roofState}       sub="current"   color={roofState === 'ON' ? 'amber' : 'cyan'} />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

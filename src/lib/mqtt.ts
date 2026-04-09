@@ -19,13 +19,15 @@ function notifyStatus(ok: boolean) {
 export function getMQTTConnected() { return connected }
 
 export function onMQTTStatus(fn: (ok: boolean) => void) {
-  statusListeners.push(fn)
+  // Prevent duplicate registration of the same function reference
+  if (!statusListeners.includes(fn)) statusListeners.push(fn)
   fn(connected)
   return () => { statusListeners = statusListeners.filter(f => f !== fn) }
 }
 
 export function onMQTTMessage(fn: MQTTCallback) {
-  subscribers.push(fn)
+  // Prevent duplicate registration of the same function reference
+  if (!subscribers.includes(fn)) subscribers.push(fn)
   return () => { subscribers = subscribers.filter(f => f !== fn) }
 }
 
@@ -65,6 +67,7 @@ export async function connectMQTT(): Promise<void> {
       client.subscribe([
         process.env.NEXT_PUBLIC_MQTT_TOPIC_DOOR || 'esp32/led',
         process.env.NEXT_PUBLIC_MQTT_TOPIC_UID  || 'esp32/card_uid',
+        process.env.NEXT_PUBLIC_MQTT_TOPIC_ROOF || 'esp32/roof',
       ], () => {})
     })
 
@@ -74,7 +77,9 @@ export async function connectMQTT(): Promise<void> {
     client.on('offline',     () => { notifyStatus(false); connecting = false })
 
     client.on('message', (topic: string, payload: Buffer) => {
-      subscribers.forEach(fn => fn(topic, payload.toString()))
+      // Snapshot the array to avoid issues if a subscriber unsubs mid-loop
+      const snapshot = [...subscribers]
+      snapshot.forEach(fn => fn(topic, payload.toString()))
     })
   } catch (err) {
     console.error('[MQTT] module load error', err)
@@ -88,5 +93,7 @@ export function publishMQTT(topic: string, payload: string): boolean {
   return true
 }
 
-export function openDoor()  { return publishMQTT(process.env.NEXT_PUBLIC_MQTT_TOPIC_DOOR || 'esp32/led', 'ON')  }
-export function closeDoor() { return publishMQTT(process.env.NEXT_PUBLIC_MQTT_TOPIC_DOOR || 'esp32/led', 'OFF') }
+export function openDoor()  { return publishMQTT(process.env.NEXT_PUBLIC_MQTT_TOPIC_DOOR || 'esp32/led',  'ON')  }
+export function closeDoor() { return publishMQTT(process.env.NEXT_PUBLIC_MQTT_TOPIC_DOOR || 'esp32/led',  'OFF') }
+export function openRoof()  { return publishMQTT(process.env.NEXT_PUBLIC_MQTT_TOPIC_ROOF || 'esp32/roof', 'ON')  }
+export function closeRoof() { return publishMQTT(process.env.NEXT_PUBLIC_MQTT_TOPIC_ROOF || 'esp32/roof', 'OFF') }

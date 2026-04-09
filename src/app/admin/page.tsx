@@ -10,34 +10,25 @@ import {
   UserProfile, Transaction,
 } from '@/lib/firestore'
 import { useMQTT } from '@/hooks/useMQTT'
-import { onMQTTMessage, publishMQTT, connectMQTT } from '@/lib/mqtt'
-import { verifyAndParseUID } from '@/lib/hmac'
+import { publishMQTT } from '@/lib/mqtt'
 import Navbar from '@/components/Navbar'
 import DoorControl from '@/components/DoorControl'
 import TransactionList from '@/components/TransactionList'
 import StatCard from '@/components/StatCard'
 import clsx from 'clsx'
+import {
+  initRFIDBrain, registerListener, registerCountdownListener, registerToastListener,
+  forceOpen, forceClose, clearScanLog,
+  ScanEvent, ScanLogEntry,
+} from '@/lib/Rfidbrain'
 
-const COST_PER_OPEN = 1
-const DOOR_TOPIC    = 'esp32/led'
-
-type ScanLogEntry = (
-  | { type: 'granted'; uid: string; name: string; points: number }
-  | { type: 'denied';  uid: string; reason: string }
-  | { type: 'unknown'; uid: string }
-) & { time: string }
-
-type ScanEvent =
-  | { type: 'idle' }
-  | { type: 'scanning'; uid: string }
-  | { type: 'granted';  uid: string; name: string; points: number }
-  | { type: 'denied';   uid: string; reason: string }
-  | { type: 'unknown';  uid: string }
+const DOOR_TOPIC = 'esp32/led'
+const ROOF_TOPIC = 'esp32/roof'
 
 export default function AdminPage() {
   const { user, profile: authProfile, loading } = useAuth()
   const router = useRouter()
-  const { connected, doorState, lastUID, publish } = useMQTT()
+  const { connected, doorState, roofState, lastUID, publish } = useMQTT()
 
   const [users,       setUsers]       = useState<UserProfile[]>([])
   const [txs,         setTxs]         = useState<Transaction[]>([])
@@ -55,30 +46,6 @@ export default function AdminPage() {
   const [scanLog,     setScanLog]     = useState<ScanLogEntry[]>([])
   const [countdown,   setCountdown]   = useState<number | null>(null)
 
-  // Refs so MQTT callback always sees fresh data without re-subscribing
-  const processingRef  = useRef(false)
-  const usersRef       = useRef<UserProfile[]>([])
-  const countdownRef   = useRef<ReturnType<typeof setInterval> | null>(null)
-  useEffect(() => { usersRef.current = users }, [users])
-
-  const startCountdown = (seconds = 60) => {
-    // clear any existing countdown
-    if (countdownRef.current) clearInterval(countdownRef.current)
-    setCountdown(seconds)
-    let remaining = seconds
-    countdownRef.current = setInterval(() => {
-      remaining -= 1
-      setCountdown(remaining)
-      if (remaining <= 0) {
-        clearInterval(countdownRef.current!)
-        countdownRef.current = null
-        setCountdown(null)
-        publishMQTT(DOOR_TOPIC, 'OFF')
-        showToast('Auto-closed after 60s')
-      }
-    }, 1000)
-  }
-
   // guards
   useEffect(() => {
     if (!loading && !user)                         router.replace('/login')
@@ -95,108 +62,27 @@ export default function AdminPage() {
     if (updated) setSelected(updated)
   }, [users])
 
-  // ── RFID BRAIN — runs in admin, works without user dashboard open ───────────
+  // ── Boot the RFID brain singleton once ───────────────────────────────────────
   useEffect(() => {
     if (!user) return
-    connectMQTT()
 
-    const unsub = onMQTTMessage(async (topic, payload) => {
-      const t = payload.trim()
+    // Init is idempotent — safe to call multiple times
+    initRFIDBrain()
 
-      // Debug: log every MQTT message
-      console.log('[MQTT]', topic, '->', t.slice(0, 80))
+    // Wire up toast
+    registerToastListener((msg) => showToast(msg))
 
-      if (!topic.includes('card_uid')) return
-      console.log('[RFID] card_uid received, processing locked:', processingRef.current)
-      if (processingRef.current) return
+    // Wire up countdown
+    registerCountdownListener((n) => setCountdown(n))
 
-      processingRef.current = true
-
-      // Verify HMAC signature
-      const parsed = await verifyAndParseUID(t)
-      console.log('[RFID] HMAC verify result:', parsed)
-      if (!parsed.valid) {
-        console.warn('[RFID] Rejected:', parsed.reason, '| payload:', t)
-        processingRef.current = false
-        return
-      }
-
-      const uid = parsed.uid.toUpperCase()
-      const now = new Date().toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-
-      setScanEvent({ type: 'scanning', uid })
-
-      try {
-        const cardOwner = await findUserByCardUid(uid)
-
-        if (!cardOwner) {
-          publishMQTT(DOOR_TOPIC, 'DENY')
-          const ev: ScanEvent = { type: 'unknown', uid }
-          setScanEvent(ev)
-          setScanLog(l => [{ ...ev, time: now } as ScanLogEntry, ...l.slice(0, 49)])
-          setTimeout(() => setScanEvent({ type: 'idle' }), 5000)
-          processingRef.current = false
-          return
-        }
-
-        // ✅ Registered card — toggle door
-        const isCurrentlyOpen = countdownRef.current !== null
-
-        if (isCurrentlyOpen) {
-          // Door is open — close it (no points deducted for closing)
-          if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null }
-          setCountdown(null)
-          publishMQTT(DOOR_TOPIC, 'OFF')
-
-          const ev: ScanEvent = { type: 'granted', uid, name: cardOwner.name, points: cardOwner.points ?? 0 }
-          setScanEvent({ ...ev, name: `${cardOwner.name} (closed door)` } as ScanEvent)
-          setScanLog(l => [{ ...ev, time: now, name: `${cardOwner.name} — closed door` } as ScanLogEntry, ...l.slice(0, 49)])
-          showToast(`Door closed by ${cardOwner.name}`)
-          setTimeout(() => setScanEvent({ type: 'idle' }), 4000)
-          processingRef.current = false
-          return
-        }
-
-        // Door is closed — check points before opening
-        if ((cardOwner.points ?? 0) < COST_PER_OPEN) {
-          publishMQTT(DOOR_TOPIC, 'DENY')
-          const ev: ScanEvent = { type: 'denied', uid, reason: `Insufficient points (${cardOwner.points ?? 0} pts)` }
-          setScanEvent(ev)
-          setScanLog(l => [{ ...ev, time: now } as ScanLogEntry, ...l.slice(0, 49)])
-          setTimeout(() => setScanEvent({ type: 'idle' }), 5000)
-          processingRef.current = false
-          return
-        }
-
-        // Open it and deduct points
-        const sent = publishMQTT(DOOR_TOPIC, 'ON')
-        startCountdown(60)
-        if (!sent) {
-          await new Promise(r => setTimeout(r, 600))
-          publishMQTT(DOOR_TOPIC, 'ON')
-        }
-
-        await adjustPoints(
-          cardOwner.uid, -COST_PER_OPEN,
-          'Door opened via RFID card',
-          'system', 'System', cardOwner.name,
-        )
-
-        const ev: ScanEvent = { type: 'granted', uid, name: cardOwner.name, points: (cardOwner.points ?? 0) - COST_PER_OPEN }
-        setScanEvent(ev)
-        setScanLog(l => [{ ...ev, time: now } as ScanLogEntry, ...l.slice(0, 49)])
-        setTimeout(() => setScanEvent({ type: 'idle' }), 5000)
-
-      } catch (err) {
-        console.error('[RFID Brain]', err)
-        setScanEvent({ type: 'idle' })
-      }
-
-      processingRef.current = false
+    // Wire up scan events + log
+    const unsub = registerListener((ev, log) => {
+      setScanEvent(ev)
+      setScanLog(log)
     })
 
     return unsub
-  }, [user]) // subscribe once only
+  }, [user])
 
   // ── helpers ─────────────────────────────────────────────────────────────────
   const showToast = (msg: string, type: 'ok' | 'err' = 'ok') => {
@@ -306,7 +192,6 @@ export default function AdminPage() {
                 tab === t ? 'bg-accent text-bg' : 'text-muted hover:text-white',
               )}>
               {t === 'scan' ? 'Live Access' : t}
-              {/* dot when scan event is active */}
               {t === 'scan' && scanEvent.type !== 'idle' && tab !== 'scan' && (
                 <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-green dot-blink" />
               )}
@@ -348,7 +233,6 @@ export default function AdminPage() {
                     <p className="text-muted font-mono text-sm">Waiting for card scan…</p>
                   </>
                 )}
-
                 {scanEvent.type === 'scanning' && (
                   <>
                     <div className="relative w-16 h-16 rounded-full border-2 border-accent flex items-center justify-center">
@@ -362,7 +246,6 @@ export default function AdminPage() {
                     <p className="text-muted font-mono text-xs">{scanEvent.uid}</p>
                   </>
                 )}
-
                 {scanEvent.type === 'granted' && (
                   <>
                     <div className="w-16 h-16 rounded-full bg-green/20 border-2 border-green flex items-center justify-center">
@@ -377,7 +260,6 @@ export default function AdminPage() {
                     </div>
                   </>
                 )}
-
                 {scanEvent.type === 'denied' && (
                   <>
                     <div className="w-16 h-16 rounded-full bg-red/20 border-2 border-red flex items-center justify-center">
@@ -392,7 +274,6 @@ export default function AdminPage() {
                     </div>
                   </>
                 )}
-
                 {scanEvent.type === 'unknown' && (
                   <>
                     <div className="w-16 h-16 rounded-full bg-amber/20 border-2 border-amber flex items-center justify-center">
@@ -428,21 +309,29 @@ export default function AdminPage() {
               )}
 
               {/* manual door override */}
-              <div className="grid grid-cols-2 gap-2 pt-2">
-                <button onClick={() => { publishMQTT(DOOR_TOPIC, 'ON'); startCountdown(60); showToast('Door opened — auto-closes in 60s') }}
-                  disabled={!connected}
-                  className="py-2.5 rounded-xl bg-green hover:opacity-90 disabled:opacity-40 text-bg font-bold text-sm transition-all">
-                  Force Open
-                </button>
-                <button onClick={() => {
-                    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; setCountdown(null) }
-                    publishMQTT(DOOR_TOPIC, 'OFF')
-                    showToast('Door closed')
-                  }}
-                  disabled={!connected}
-                  className="py-2.5 rounded-xl border border-border hover:border-accent text-white font-bold text-sm transition-all disabled:opacity-40">
-                  Force Close
-                </button>
+              <div className="space-y-2 pt-2">
+                <p className="text-xs font-semibold uppercase tracking-widest text-muted">Door</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={forceOpen} disabled={!connected}
+                    className="py-2.5 rounded-xl bg-green hover:opacity-90 disabled:opacity-40 text-bg font-bold text-sm transition-all">
+                    Force Open
+                  </button>
+                  <button onClick={forceClose} disabled={!connected}
+                    className="py-2.5 rounded-xl border border-border hover:border-accent text-white font-bold text-sm transition-all disabled:opacity-40">
+                    Force Close
+                  </button>
+                </div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-muted pt-1">Roof</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => { publishMQTT(ROOF_TOPIC, 'ON'); showToast('Roof opened') }} disabled={!connected}
+                    className="py-2.5 rounded-xl bg-amber hover:opacity-90 disabled:opacity-40 text-bg font-bold text-sm transition-all">
+                    Open Roof
+                  </button>
+                  <button onClick={() => { publishMQTT(ROOF_TOPIC, 'OFF'); showToast('Roof closed') }} disabled={!connected}
+                    className="py-2.5 rounded-xl border border-border hover:border-amber hover:text-amber text-white font-bold text-sm transition-all disabled:opacity-40">
+                    Close Roof
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -450,7 +339,7 @@ export default function AdminPage() {
             <div className="bg-surface border border-border rounded-2xl p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xs font-bold uppercase tracking-widest text-muted">Scan Log</h2>
-                <button onClick={() => setScanLog([])} className="text-xs text-muted hover:text-red transition-colors font-mono">
+                <button onClick={clearScanLog} className="text-xs text-muted hover:text-red transition-colors font-mono">
                   Clear
                 </button>
               </div>
@@ -657,10 +546,12 @@ export default function AdminPage() {
 
             <div className="bg-surface border border-border rounded-2xl p-6">
               <h2 className="text-sm font-bold uppercase tracking-widest text-muted mb-4">Quick Actions</h2>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
                 {[
-                  { label: 'Door ON',    cb: () => { publishMQTT('esp32/led', 'ON');  showToast('Sent ON')  } },
-                  { label: 'Door OFF',   cb: () => { publishMQTT('esp32/led', 'OFF'); showToast('Sent OFF') } },
+                  { label: 'Door ON',    cb: () => { publishMQTT('esp32/led',  'ON');  showToast('Sent ON')   } },
+                  { label: 'Door OFF',   cb: () => { publishMQTT('esp32/led',  'OFF'); showToast('Sent OFF')  } },
+                  { label: 'Roof ON',    cb: () => { publishMQTT('esp32/roof', 'ON');  showToast('Roof ON')   } },
+                  { label: 'Roof OFF',   cb: () => { publishMQTT('esp32/roof', 'OFF'); showToast('Roof OFF')  } },
                   { label: 'Push Cards', cb: publishCards },
                 ].map(a => (
                   <button key={a.label} onClick={a.cb} disabled={!connected}
@@ -676,6 +567,7 @@ export default function AdminPage() {
               <div className="space-y-2 text-xs font-mono">
                 {[
                   { topic: 'esp32/led',      desc: 'Door control · ON / OFF' },
+                  { topic: 'esp32/roof',     desc: 'Roof control · ON / OFF' },
                   { topic: 'esp32/cards',    desc: 'Card list JSON push' },
                   { topic: 'esp32/card_uid', desc: 'Scanned UID from device' },
                 ].map(r => (
