@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/hooks/useAuth'
 import {
   listenUser, listenUserTransactions,
@@ -16,6 +16,7 @@ import Navbar from '@/components/Navbar'
 import DoorControl from '@/components/DoorControl'
 import TransactionList from '@/components/TransactionList'
 import StatCard from '@/components/StatCard'
+import BuyPoints from '@/components/BuyPoints'
 import clsx from 'clsx'
 
 const COST_PER_OPEN = 1
@@ -32,12 +33,14 @@ type ScanStatus =
 export default function DashboardPage() {
   const { user, profile: authProfile, loading } = useAuth()
   const router = useRouter()
+  const searchParams = useSearchParams()
   const { connected, doorState, roofState, lastUID } = useMQTT()
 
-  const [profile,      setProfile]      = useState<UserProfile | null>(null)
-  const [txs,          setTxs]          = useState<Transaction[]>([])
-  const [scanStatus,   setScanStatus]   = useState<ScanStatus>({ type: 'idle' })
-  const [registerMode, setRegisterMode] = useState(false)
+  const [profile,        setProfile]        = useState<UserProfile | null>(null)
+  const [txs,            setTxs]            = useState<Transaction[]>([])
+  const [scanStatus,     setScanStatus]     = useState<ScanStatus>({ type: 'idle' })
+  const [registerMode,   setRegisterMode]   = useState(false)
+  const [paymentToast,   setPaymentToast]   = useState<'success' | 'failed' | null>(null)
 
   // keep a ref to the latest profile so MQTT callback always sees fresh data
   const profileRef           = useRef<UserProfile | null>(null)
@@ -66,6 +69,20 @@ export default function DashboardPage() {
     if (!user) return
     return listenUserTransactions(user.uid, setTxs)
   }, [user])
+
+  // handle PayMongo redirect result
+  useEffect(() => {
+    const status = searchParams.get('payment')
+    if (status === 'success' || status === 'failed') {
+      setPaymentToast(status as 'success' | 'failed')
+      // clean query param without full reload
+      const url = new URL(window.location.href)
+      url.searchParams.delete('payment')
+      url.searchParams.delete('points')
+      window.history.replaceState({}, '', url.toString())
+      setTimeout(() => setPaymentToast(null), 5000)
+    }
+  }, [searchParams])
 
   // ── RFID scan handler via MQTT ──────────────────────────────────────────────
   const rfidUnsubRef = useRef<(() => void) | null>(null)
@@ -209,6 +226,33 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-bg">
       <Navbar />
 
+      {/* Payment result toast */}
+      {paymentToast && (
+        <div className={clsx(
+          'fixed top-4 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-2xl border shadow-lg',
+          'flex items-center gap-3 text-sm font-semibold animate-slide-up',
+          paymentToast === 'success'
+            ? 'bg-green/10 border-green/30 text-green'
+            : 'bg-red/10 border-red/30 text-red',
+        )}>
+          {paymentToast === 'success' ? (
+            <>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5 flex-shrink-0">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              Payment successful! Points will be added shortly.
+            </>
+          ) : (
+            <>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5 flex-shrink-0">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              Payment was not completed.
+            </>
+          )}
+        </div>
+      )}
+
       <main className="max-w-5xl mx-auto px-4 py-8 animate-slide-up">
         {/* welcome */}
         <div className="mb-8">
@@ -282,6 +326,12 @@ export default function DashboardPage() {
                   hasCard={!!profile.cardUid}
                 />
               </div>
+            </div>
+
+            {/* ── BUY POINTS ─────────────────────────────────────────────── */}
+            <div>
+              <h2 className="text-xs font-bold uppercase tracking-widest text-muted mb-3">Top Up</h2>
+              <BuyPoints userId={user!.uid} userName={profile.name} />
             </div>
 
           </div>
