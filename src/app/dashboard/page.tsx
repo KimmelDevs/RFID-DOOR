@@ -210,10 +210,17 @@ export default function DashboardPage() {
     }
   }, [user]) // subscribe once only
 
-  if (loading || !profile) {
+  if (!loading && !user) return null
+
+  const resolvedProfile = profile ?? authProfile
+
+  if (loading || !resolvedProfile) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-bg">
-        <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+          <p className="text-muted text-xs font-mono">Loading…</p>
+        </div>
       </div>
     )
   }
@@ -257,7 +264,7 @@ export default function DashboardPage() {
         {/* welcome */}
         <div className="mb-8">
           <h1 className="text-2xl font-bold text-white">
-            Hey, <span className="text-accent">{profile.name}</span> 👋
+            Hey, <span className="text-accent">{resolvedProfile.name}</span> 👋
           </h1>
           <p className="text-muted text-sm mt-1">
             Use your RFID card or the button below to unlock the door
@@ -266,7 +273,7 @@ export default function DashboardPage() {
 
         {/* stats */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
-          <StatCard label="Points"       value={profile.points}  sub="available" color="cyan"  />
+          <StatCard label="Points"       value={resolvedProfile.points}  sub="available" color="cyan"  />
           <StatCard label="Total Earned" value={totalCredits}    sub="all time"  color="green" />
           <StatCard label="Total Used"   value={totalDebits}     sub="all time"  color="amber" />
           <StatCard label="Door Opens"   value={opens}           sub="all time"  color="red"   />
@@ -282,11 +289,11 @@ export default function DashboardPage() {
             <div>
               <h2 className="text-xs font-bold uppercase tracking-widest text-muted mb-3">Manual Control</h2>
               <DoorControl
-                points={profile.points}
+                points={resolvedProfile.points}
                 costPerOpen={COST_PER_OPEN}
                 onPointsSpent={async (amt) => {
                   if (!user || !profile) return
-                  await adjustPoints(user.uid, -amt, 'Door opened via app', 'system', 'System', profile.name)
+                  await adjustPoints(user.uid, -amt, 'Door opened via app', 'system', 'System', resolvedProfile.name)
                 }}
               />
             </div>
@@ -300,13 +307,13 @@ export default function DashboardPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs text-muted font-mono uppercase tracking-widest mb-1">Linked Card</p>
-                    {profile.cardUid ? (
-                      <p className="text-accent font-mono font-bold tracking-widest text-sm">{profile.cardUid}</p>
+                    {resolvedProfile.cardUid ? (
+                      <p className="text-accent font-mono font-bold tracking-widest text-sm">{resolvedProfile.cardUid}</p>
                     ) : (
                       <p className="text-muted text-sm italic">No card linked</p>
                     )}
                   </div>
-                  {profile.cardUid && (
+                  {resolvedProfile.cardUid && (
                     <div className="w-8 h-8 rounded-lg bg-green/10 border border-green/20 flex items-center justify-center">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-green">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/>
@@ -323,7 +330,7 @@ export default function DashboardPage() {
                     setRegisterMode(r => !r)
                     setScanStatus({ type: 'idle' })
                   }}
-                  hasCard={!!profile.cardUid}
+                  hasCard={!!resolvedProfile.cardUid}
                 />
               </div>
             </div>
@@ -331,7 +338,7 @@ export default function DashboardPage() {
             {/* ── BUY POINTS ─────────────────────────────────────────────── */}
             <div>
               <h2 className="text-xs font-bold uppercase tracking-widest text-muted mb-3">Top Up</h2>
-              <BuyPoints userId={user!.uid} userName={profile.name} />
+              <BuyPoints userId={user!.uid} userName={resolvedProfile.name} />
             </div>
 
           </div>
