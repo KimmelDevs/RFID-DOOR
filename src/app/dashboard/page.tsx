@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/hooks/useAuth'
 import {
@@ -30,7 +30,7 @@ type ScanStatus =
   | { type: 'saving';   uid: string }
   | { type: 'saved';    uid: string }
 
-export default function DashboardPage() {
+function DashboardPage() {
   const { user, profile: authProfile, loading } = useAuth()
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -487,5 +487,15 @@ function ScanStatusPanel({
         {hasCard ? '↺ Replace Card' : '+ Register Card'}
       </button>
     </div>
+  )
+}
+
+// ── Suspense wrapper (fixes Next.js prerender error with useSearchParams) ────
+
+export default function Page() {
+  return (
+    <Suspense>
+      <DashboardPage />
+    </Suspense>
   )
 }
